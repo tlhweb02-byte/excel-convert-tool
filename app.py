@@ -179,11 +179,11 @@ def process_excel(uploaded_file):
     valid_cols = [c for c in df.columns if '热门分类导航' not in str(c)]
     df = df[valid_cols]
 
-    # 列名转换：图片链接 -> 产品图，商品卖点 -> 卖点
+    # 列名转换：图片链接 / 产品图 -> 商品图，商品卖点 -> 卖点
     rename_map = {}
     for col in df.columns:
-        if col in ['图片链接', '商品图']:
-            rename_map[col] = '产品图'
+        if col in ['图片链接', '产品图']:
+            rename_map[col] = '商品图'
         elif col in ['商品卖点']:
             rename_map[col] = '卖点'
     df = df.rename(columns=rename_map)
