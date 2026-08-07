@@ -151,7 +151,8 @@ def render_ui():
                         filename = os.path.basename(inner_path)
                         dirname = os.path.dirname(inner_path)
 
-                        ext = os.path.splitext(filename).lower()  # 👈 已经修正此处
+                        # 正确获取扩展名后缀：使用 下标
+                        ext = os.path.splitext(filename).lower()
                         if ext in ['.jpg', '.jpeg', '.png', '.webp']:
                             out_bytes, out_name, log_msg = compress_single_image(file_data, filename, target_kb)
                             out_inner_path = os.path.join("compressed_images", dirname, out_name) if dirname else os.path.join("compressed_images", out_name)
