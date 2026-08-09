@@ -28,15 +28,24 @@ def get_gspread_client():
     if not GSPREAD_AVAILABLE:
         return None, "缺失 `gspread` 或 `google-auth` 依赖库，请检查 `requirements.txt`"
     try:
-        # 1. 优先解密 Base64 模式凭据（100% 免疫 TOML PEM 解析报错）
+        b64_val = None
+        # 1. 检查根路径下的 gcp_service_account_base64
         if "gcp_service_account_base64" in st.secrets:
             b64_val = str(st.secrets["gcp_service_account_base64"]).strip()
+        # 2. 检查嵌套在 [gcp_service_account] 下的 gcp_service_account_base64
+        elif "gcp_service_account" in st.secrets and isinstance(st.secrets["gcp_service_account"], dict) and "gcp_service_account_base64" in st.secrets["gcp_service_account"]:
+            b64_val = str(st.secrets["gcp_service_account"]["gcp_service_account_base64"]).strip()
+        # 3. 检查 [gcp_service_account] 本身是否就是字符串
+        elif "gcp_service_account" in st.secrets and isinstance(st.secrets["gcp_service_account"], str):
+            b64_val = str(st.secrets["gcp_service_account"]).strip()
+
+        if b64_val and len(b64_val) > 100 and not b64_val.startswith("{"):
             decoded_json = base64.b64decode(b64_val).decode("utf-8")
             sec_dict = json.loads(decoded_json)
             creds = Credentials.from_service_account_info(sec_dict, scopes=SCOPES)
             return gspread.authorize(creds), None
 
-        # 2. 备用读取普通结构模式
+        # 4. 备用读取普通结构字典模式
         if "gcp_service_account" in st.secrets:
             raw_sec = st.secrets["gcp_service_account"]
             if isinstance(raw_sec, str):
