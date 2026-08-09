@@ -31,5 +31,5 @@ elif nav_choice == "🖼️ 智能图片压缩与降维":
 elif nav_choice == "🏆 团队提效仪表盘":
     mod_stats.render_ui()
 
-# 底部展示统一数据统计面板 (Data Dashboard)
+# 底部统一数据统计面板 (Data Dashboard)
 mod_stats.render_bottom_panel()
