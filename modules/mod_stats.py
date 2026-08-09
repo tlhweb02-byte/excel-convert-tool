@@ -25,39 +25,40 @@ SCOPES = [
 def get_gspread_client():
     """获取与 Google Sheets 交互的 Client 凭据"""
     if not GSPREAD_AVAILABLE:
-        return None
+        return None, "缺失 `gspread` 或 `google-auth` 依赖库，请检查 `requirements.txt`"
     try:
         if "gcp_service_account" in st.secrets:
             creds = Credentials.from_service_account_info(
                 st.secrets["gcp_service_account"],
                 scopes=SCOPES
             )
-            return gspread.authorize(creds)
+            return gspread.authorize(creds), None
+        else:
+            return None, "未在 Streamlit Secrets 中找到 `[gcp_service_account]` 配置"
     except Exception as e:
-        print(f"Google Sheets Client Init Error: {e}")
-    return None
+        return None, f"Secrets 解析失败: {e}"
 
 def _get_worksheet():
     """获取或初始化 Google Sheet 工作表"""
-    client = get_gspread_client()
+    client, err = get_gspread_client()
     if client:
         try:
             try:
                 sh = client.open(SPREADSHEET_NAME)
             except gspread.exceptions.SpreadsheetNotFound:
-                sh = client.create(SPREADSHEET_NAME)
+                return None, f"未找到名为 `{SPREADSHEET_NAME}` 的 Google 表格，或未将该表格共享给服务账号邮箱"
             ws = sh.sheet1
             headers = ws.row_values(1)
             if not headers:
                 ws.append_row(["date", "compressed_images", "saved_bytes", "excel_cleaned", "last_updated"])
-            return ws
+            return ws, None
         except Exception as e:
-            print(f"Google Worksheet Access Error: {e}")
-    return None
+            return None, f"访问表格发生错误: {e}"
+    return None, err
 
 def _load_all_records():
     """优先从 Google Sheets 读取全量统计记录字典，未配置时回退读取本地 JSON"""
-    ws = _get_worksheet()
+    ws, err = _get_worksheet()
     if ws:
         try:
             records = ws.get_all_records()
@@ -71,24 +72,24 @@ def _load_all_records():
                         "excel_cleaned": int(r.get("excel_cleaned", 0) or 0),
                         "last_updated": str(r.get("last_updated", ""))
                     }
-            return stats_dict
+            return stats_dict, None
         except Exception as e:
-            print(f"Load from Sheet Error: {e}")
+            return {}, f"读取 Sheet 数据解析失败: {e}"
 
     # 回退到本地 JSON 模式
     if os.path.exists(STATS_FILE_PATH):
         try:
             with open(STATS_FILE_PATH, "r", encoding="utf-8") as f:
-                return json.load(f)
+                return json.load(f), f"（本地暂存模式: {err}）"
         except Exception:
-            return {}
-    return {}
+            return {}, f"（本地暂存模式: {err}）"
+    return {}, f"（未连通云端数据库: {err}）"
 
 def _save_stats(data):
     """写回 Google Sheets，若未配置则回退写入本地 JSON 文件"""
     today = get_today_key()
     today_data = data.get(today, {})
-    ws = _get_worksheet()
+    ws, err = _get_worksheet()
 
     if ws:
         try:
@@ -125,14 +126,8 @@ def get_today_key():
     return datetime.date.today().isoformat()
 
 def aggregate_stats_by_prefix(prefix=""):
-    """
-    按日期前缀聚合统计数据：
-    - prefix="" -> 全量累计
-    - prefix="2026" -> 2026 年度统计
-    - prefix="2026-08" -> 2026 年 8 月月度统计
-    - prefix="2026-08-09" -> 当天日度统计
-    """
-    all_data = _load_all_records()
+    """按日期前缀聚合统计数据"""
+    all_data, err = _load_all_records()
     compressed_images = 0
     saved_bytes = 0
     excel_cleaned = 0
@@ -147,49 +142,45 @@ def aggregate_stats_by_prefix(prefix=""):
         "compressed_images": compressed_images,
         "saved_bytes": saved_bytes,
         "excel_cleaned": excel_cleaned
-    }
+    }, err
 
 def record_image_compression(count=1, saved_bytes=0):
     """记录图片压缩调用与空间节省量"""
     if count <= 0:
         return
-    data = _load_all_records()
+    all_data, _ = _load_all_records()
     today = get_today_key()
-    if today not in data:
-        data[today] = {
+    if today not in all_data:
+        all_data[today] = {
             "compressed_images": 0,
             "saved_bytes": 0,
             "excel_cleaned": 0,
             "last_updated": ""
         }
-    data[today]["compressed_images"] += count
-    data[today]["saved_bytes"] += max(0, int(saved_bytes))
-    data[today]["last_updated"] = datetime.datetime.now().strftime("%H:%M:%S")
-    _save_stats(data)
+    all_data[today]["compressed_images"] += count
+    all_data[today]["saved_bytes"] += max(0, int(saved_bytes))
+    all_data[today]["last_updated"] = datetime.datetime.now().strftime("%H:%M:%S")
+    _save_stats(all_data)
 
 def record_excel_cleaning(count=1):
     """记录 Excel 表格清洗转化调用"""
     if count <= 0:
         return
-    data = _load_all_records()
+    all_data, _ = _load_all_records()
     today = get_today_key()
-    if today not in data:
-        data[today] = {
+    if today not in all_data:
+        all_data[today] = {
             "compressed_images": 0,
             "saved_bytes": 0,
             "excel_cleaned": 0,
             "last_updated": ""
         }
-    data[today]["excel_cleaned"] += count
-    data[today]["last_updated"] = datetime.datetime.now().strftime("%H:%M:%S")
-    _save_stats(data)
+    all_data[today]["excel_cleaned"] += count
+    all_data[today]["last_updated"] = datetime.datetime.now().strftime("%H:%M:%S")
+    _save_stats(all_data)
 
 def calculate_hours_saved(excel_cleaned, compressed_images):
-    """
-    预估节约机械重复劳动小时数：
-    - 每清洗 1 个 Excel 脏表：预估省 0.5 小时 (30 分钟)
-    - 每压缩 1 张大图：预估省 0.05 小时 (3 分钟)
-    """
+    """预估节约机械重复劳动小时数"""
     hours = (excel_cleaned * 0.5) + (compressed_images * 0.05)
     return round(hours, 2)
 
@@ -219,7 +210,7 @@ def get_achievement_badge(hours):
         return "👑 机械劳动终结者", "无敌！机器一响黄金万两，您已彻底解放团队双手！"
 
 def render_bottom_panel():
-    """在 GUI 底部渲染多维度数据统计面板"""
+    """在 GUI 底部渲染数据统计面板"""
     st.markdown("---")
     
     today_str = get_today_key()
@@ -248,7 +239,11 @@ def render_bottom_panel():
         prefix = ""
         sub_title = "历史全量累计"
         
-    stats = aggregate_stats_by_prefix(prefix)
+    stats, err = aggregate_stats_by_prefix(prefix)
+    
+    if err:
+        st.warning(f"⚠️ 云端数据库连接提示：{err}")
+        
     excel_cleaned = stats.get("excel_cleaned", 0)
     compressed_images = stats.get("compressed_images", 0)
     saved_bytes = stats.get("saved_bytes", 0)
@@ -260,34 +255,10 @@ def render_bottom_panel():
     st.caption(f"📅 统计区间：**{sub_title}** | 自动化中台实时同步提效战果 ⚡")
     
     col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.metric(
-            label="🖼️ 压缩大图",
-            value=f"{compressed_images} 张",
-            help="通过中台进行画质衰减、格式转换与云端压缩的图片总量"
-        )
-        
-    with col2:
-        st.metric(
-            label="💾 节省 GB 空间",
-            value=saved_gb_str,
-            help="压缩前后减少的文件体积累计总和"
-        )
-        
-    with col3:
-        st.metric(
-            label="📊 清洗 Excel 脏表",
-            value=f"{excel_cleaned} 个",
-            help="完成智能切割、标题剪裁 (6-7字) 及标准化列输出的运营表格数"
-        )
-        
-    with col4:
-        st.metric(
-            label="⏱️ 节约重复劳动",
-            value=f"{hours_saved:.1f} 小时",
-            help="计算公式：每清洗 1 表格省 0.5 小时，每压缩 1 图片省 0.05 小时"
-        )
+    col1.metric("🖼️ 压缩大图", f"{compressed_images} 张")
+    col2.metric("💾 节省 GB 空间", saved_gb_str)
+    col3.metric("📊 清洗 Excel 脏表", f"{excel_cleaned} 个")
+    col4.metric("⏱️ 节约重复劳动", f"{hours_saved:.1f} 小时")
         
     st.success(f"**{badge}**｜{slogan} （区间内累计为团队免除 **{hours_saved:.1f}** 小时“机械重复劳动”）")
 
@@ -296,7 +267,10 @@ def render_ui():
     st.header("🏆 团队提效仪表盘 (Data Dashboard)")
     st.markdown("记录团队通过中台完成的自动化提效战果，支持按**年、月、日**精准追溯明细与全量统计！")
     
-    all_data = _load_all_records()
+    all_data, err = _load_all_records()
+    if err:
+        st.warning(f"⚠️ 云端数据库连接提示：{err}")
+        
     dates = sorted(list(all_data.keys()), reverse=True)
     
     years = sorted(list(set(d[:4] for d in dates if len(d) >= 4)), reverse=True)
@@ -320,7 +294,7 @@ def render_ui():
         prefix = ""
         label_text = "全量历史累计数据"
         
-    stats = aggregate_stats_by_prefix(prefix)
+    stats, _ = aggregate_stats_by_prefix(prefix)
     excel_cleaned = stats.get("excel_cleaned", 0)
     compressed_images = stats.get("compressed_images", 0)
     saved_bytes = stats.get("saved_bytes", 0)
