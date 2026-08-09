@@ -1,5 +1,6 @@
 import os
 import json
+import base64
 import datetime
 import streamlit as st
 
@@ -27,16 +28,22 @@ def get_gspread_client():
     if not GSPREAD_AVAILABLE:
         return None, "缺失 `gspread` 或 `google-auth` 依赖库，请检查 `requirements.txt`"
     try:
+        # 1. 优先解密 Base64 模式凭据（100% 免疫 TOML PEM 解析报错）
+        if "gcp_service_account_base64" in st.secrets:
+            b64_val = str(st.secrets["gcp_service_account_base64"]).strip()
+            decoded_json = base64.b64decode(b64_val).decode("utf-8")
+            sec_dict = json.loads(decoded_json)
+            creds = Credentials.from_service_account_info(sec_dict, scopes=SCOPES)
+            return gspread.authorize(creds), None
+
+        # 2. 备用读取普通结构模式
         if "gcp_service_account" in st.secrets:
             raw_sec = st.secrets["gcp_service_account"]
-            
-            # 支持原生 JSON 字符串与 TOML 字典格式
             if isinstance(raw_sec, str):
                 sec_dict = json.loads(raw_sec)
             else:
                 sec_dict = dict(raw_sec)
 
-            # 自动强力修复私钥格式
             if "private_key" in sec_dict and isinstance(sec_dict["private_key"], str):
                 pk = sec_dict["private_key"]
                 pk = pk.replace("\\n", "\n").strip('"').strip("'")
@@ -45,13 +52,10 @@ def get_gspread_client():
                     pk = "\n".join(lines) + "\n"
                 sec_dict["private_key"] = pk
 
-            creds = Credentials.from_service_account_info(
-                sec_dict,
-                scopes=SCOPES
-            )
+            creds = Credentials.from_service_account_info(sec_dict, scopes=SCOPES)
             return gspread.authorize(creds), None
-        else:
-            return None, "未在 Streamlit Secrets 中找到 `gcp_service_account` 配置"
+
+        return None, "未在 Streamlit Secrets 中找到凭据配置"
     except Exception as e:
         return None, f"Secrets 解析失败: {e}"
 
