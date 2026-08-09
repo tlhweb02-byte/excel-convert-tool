@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import io
 import re
+from modules import mod_stats
 
 def simplify_title(row):
     name_str = str(row.get('名称', '')).strip() if pd.notna(row.get('名称')) else ""
@@ -197,8 +198,14 @@ def render_ui():
         try:
             with st.spinner("正在智能转换表格，请稍候..."):
                 df_result, output_buffer = process_excel(uploaded_file)
-            
-            st.success("🎉 表格转化成功！")
+                
+                # 关键：转化成功后记录数据到 mod_stats 仪表盘
+                try:
+                    mod_stats.record_excel_cleaning(1)
+                except Exception as e:
+                    print(f"Record excel cleaning error: {e}")
+
+            st.success("🎉 表格转化成功！提效战绩已实时同步。")
             st.subheader("📋 转换数据预览 (前 10 行)")
             st.dataframe(df_result.head(10), use_container_width=True)
             
