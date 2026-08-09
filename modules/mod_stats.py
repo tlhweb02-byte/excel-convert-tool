@@ -22,6 +22,13 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive"
 ]
 
+def _safe_int(val):
+    """安全转换为整数，防御字符串表头干扰"""
+    try:
+        return int(val)
+    except (ValueError, TypeError):
+        return 0
+
 @st.cache_resource
 def get_gspread_client():
     """获取与 Google Sheets 交互的 Client 凭据"""
@@ -95,11 +102,12 @@ def _load_all_records():
             stats_dict = {}
             for r in records:
                 d = str(r.get("date", "")).strip()
-                if d:
+                # 智能识别并剔除重复表头行
+                if d and d.lower() != "date":
                     stats_dict[d] = {
-                        "compressed_images": int(r.get("compressed_images", 0) or 0),
-                        "saved_bytes": int(r.get("saved_bytes", 0) or 0),
-                        "excel_cleaned": int(r.get("excel_cleaned", 0) or 0),
+                        "compressed_images": _safe_int(r.get("compressed_images", 0)),
+                        "saved_bytes": _safe_int(r.get("saved_bytes", 0)),
+                        "excel_cleaned": _safe_int(r.get("excel_cleaned", 0)),
                         "last_updated": str(r.get("last_updated", ""))
                     }
             return stats_dict, None
