@@ -3,6 +3,7 @@ import io
 import os
 import zipfile
 from PIL import Image
+from modules import mod_stats
 
 try:
     import tinify
@@ -107,6 +108,8 @@ def render_ui():
             if st.button("🚀 开始极速压缩"):
                 logs = []
                 compressed_files = []
+                total_saved_bytes = 0
+                compressed_count = 0
 
                 progress_bar = st.progress(0)
                 for idx, file in enumerate(files):
@@ -114,9 +117,21 @@ def render_ui():
                     out_bytes, out_name, log_msg = compress_single_image(img_bytes, file.name, target_kb)
                     logs.append(log_msg)
                     compressed_files.append((out_name, out_bytes))
+                    
+                    saved = len(img_bytes) - len(out_bytes)
+                    if saved > 0:
+                        total_saved_bytes += saved
+                    compressed_count += 1
+
                     progress_bar.progress((idx + 1) / len(files))
 
-                st.success(f"🎉 压缩完成！共处理 {len(files)} 张图片。")
+                # 统计数据上报记录至 mod_stats
+                try:
+                    mod_stats.record_image_compression(count=compressed_count, saved_bytes=total_saved_bytes)
+                except Exception as e:
+                    print(f"Record image compression error: {e}")
+
+                st.success(f"🎉 压缩完成！共处理 {len(files)} 张图片，提效战绩已实时同步。")
 
                 st.subheader("📝 处理日志监控")
                 st.code("\n".join(logs), language="text")
@@ -141,6 +156,8 @@ def render_ui():
             if st.button("🚀 解压并深度压缩 ZIP 包内所有图片"):
                 logs = []
                 out_zip_buf = io.BytesIO()
+                total_saved_bytes = 0
+                compressed_count = 0
 
                 with zipfile.ZipFile(zip_file, "r") as in_zf, zipfile.ZipFile(out_zip_buf, "w", zipfile.ZIP_DEFLATED) as out_zf:
                     file_list = [f for f in in_zf.namelist() if not f.endswith('/') and not f.startswith('__MACOSX')]
@@ -151,12 +168,17 @@ def render_ui():
                         filename = os.path.basename(inner_path)
                         dirname = os.path.dirname(inner_path)
 
-                        ext = os.path.splitext(filename)[1].lower()  # 👈 已经修正此处
+                        ext = os.path.splitext(filename).lower()
                         if ext in ['.jpg', '.jpeg', '.png', '.webp']:
                             out_bytes, out_name, log_msg = compress_single_image(file_data, filename, target_kb)
                             out_inner_path = os.path.join("compressed_images", dirname, out_name) if dirname else os.path.join("compressed_images", out_name)
                             out_zf.writestr(out_inner_path, out_bytes)
                             logs.append(log_msg)
+
+                            saved = len(file_data) - len(out_bytes)
+                            if saved > 0:
+                                total_saved_bytes += saved
+                            compressed_count += 1
                         else:
                             out_inner_path = os.path.join("compressed_images", inner_path)
                             out_zf.writestr(out_inner_path, file_data)
@@ -164,8 +186,14 @@ def render_ui():
 
                         progress_bar.progress((idx + 1) / len(file_list))
 
+                # 统计数据上报记录至 mod_stats
+                try:
+                    mod_stats.record_image_compression(count=compressed_count, saved_bytes=total_saved_bytes)
+                except Exception as e:
+                    print(f"Record zip compression error: {e}")
+
                 out_zip_buf.seek(0)
-                st.success("🎉 ZIP 压缩包处理完成！已保持原嵌套目录结构。")
+                st.success("🎉 ZIP 压缩包处理完成！已保持原嵌套目录结构，提效战绩已实时同步。")
 
                 st.subheader("📝 处理日志监控")
                 st.code("\n".join(logs), language="text")
