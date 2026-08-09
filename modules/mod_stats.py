@@ -28,8 +28,13 @@ def get_gspread_client():
         return None, "缺失 `gspread` 或 `google-auth` 依赖库，请检查 `requirements.txt`"
     try:
         if "gcp_service_account" in st.secrets:
+            # 自动修复私钥中的 \n 换行符转义问题
+            sec_dict = dict(st.secrets["gcp_service_account"])
+            if "private_key" in sec_dict and isinstance(sec_dict["private_key"], str):
+                sec_dict["private_key"] = sec_dict["private_key"].replace("\\n", "\n")
+
             creds = Credentials.from_service_account_info(
-                st.secrets["gcp_service_account"],
+                sec_dict,
                 scopes=SCOPES
             )
             return gspread.authorize(creds), None
