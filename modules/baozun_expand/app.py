@@ -41,7 +41,7 @@ def render_ui():
       bottom_d = st.number_input("下边距 (bottomDistance)", value=140, step=10)
       right_d = st.number_input("右边距 (rightDistance)", value=205, step=10)
 
-    # 自动推算目标画布大小 (原图尺寸 + 四周边距)
+    # 自动计算目标画布大小 (原图尺寸 + 四周边距)
     calc_bg_w = orig_w + left_d + right_d if uploaded_file else 800
     calc_bg_h = orig_h + top_d + bottom_d if uploaded_file else 800
 
@@ -93,7 +93,7 @@ def render_ui():
           generated_num=gen_num,
       )
 
-      status_box.write("AI 正在渲染生成图片（预估 1~2 分钟，请勿刷新）...")
+      status_box.write("AI 正在渲染生成图片（正在实时查询进度，预估 1~2 分钟）...")
       result_urls = api.get_image_expand_result(
           record_code, poll_interval=3, timeout=180
       )
