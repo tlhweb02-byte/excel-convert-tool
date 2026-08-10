@@ -5,6 +5,3 @@ pillow
 tinify
 gspread
 google-auth
-playwright
-streamlit
-requests
