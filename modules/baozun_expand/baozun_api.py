@@ -1,7 +1,6 @@
 import time
 import requests
 
-# 自动接入账号与邮件验证码管理模块
 try:
   from .account_api import BaozunAccountAPI, parse_cookie_string
 except ImportError:
@@ -29,12 +28,12 @@ class BaozunExpandAPI:
     }
     self.session.headers.update(default_headers)
 
-    # 自动获取并设置最新的有效 UAAC 鉴权 Cookie
+    # 自动初始化账号鉴权管理器，并同步有效 Cookie
     self.account_mgr = BaozunAccountAPI()
     self.sync_cookies_from_account_mgr()
 
   def sync_cookies_from_account_mgr(self, force_refresh: bool = False):
-    """自动向 account_api 获取/强制刷新有效 Cookie"""
+    """同步 account_api 中的有效 Cookie"""
     if force_refresh:
       cookie_str = self.account_mgr.login_and_get_cookie_str()
     else:
@@ -61,8 +60,9 @@ class BaozunExpandAPI:
     attempt_logs = []
     for url in possible_urls:
       try:
+        # timeout=(连接超时10s, 写入/传输超时60s)
         resp = self.session.post(
-            url, files=files, headers=headers, timeout=15
+            url, files=files, headers=headers, timeout=(10, 60)
         )
         if resp.status_code == 200:
           try:
@@ -95,7 +95,7 @@ class BaozunExpandAPI:
       except Exception as e:
         attempt_logs.append(f"[{url}] 请求失败: {str(e)}")
 
-    # 若发现 UAAC 鉴权失效，自动静默刷新 Cookie 重试一次
+    # 如果检测到 UAAC 鉴权失败，自动静默刷新 Cookie 并重试一次
     if any("UAAC" in log for log in attempt_logs):
       self.sync_cookies_from_account_mgr(force_refresh=True)
       return self._retry_upload_once(file_bytes, filename)
@@ -106,13 +106,15 @@ class BaozunExpandAPI:
     )
 
   def _retry_upload_once(self, file_bytes: bytes, filename: str) -> str:
-    """内部静默重试上传"""
+    """鉴权刷新后的单次上传重试"""
     url = f"{self.base_url}/iforce/art/image/upload/rename"
     headers = {
         k: v for k, v in self.session.headers.items() if k.lower() != "content-type"
     }
     files = {"file": (filename, file_bytes)}
-    resp = self.session.post(url, files=files, headers=headers, timeout=15)
+    resp = self.session.post(
+        url, files=files, headers=headers, timeout=(10, 60)
+    )
     resp.raise_for_status()
     try:
       res_data = resp.json()
@@ -130,7 +132,7 @@ class BaozunExpandAPI:
       )
       if code:
         return str(code)
-    raise ValueError(f"鉴权刷新后重试上传仍然失败: {res_data}")
+    raise ValueError(f"重试上传仍然失败: {res_data}")
 
   def submit_image_expand(
       self,
@@ -176,7 +178,7 @@ class BaozunExpandAPI:
 
     if isinstance(res_data, str) and res_data.strip():
       if "UAAC" in res_data or "鉴权" in res_data:
-        # 自动触发后台鉴权刷新，并重新提交
+        # 自动触发 Cookie 刷新并重试
         self.sync_cookies_from_account_mgr(force_refresh=True)
         resp = self.session.post(url, json=payload, timeout=15)
         res_data = resp.json()
@@ -244,7 +246,7 @@ class BaozunExpandAPI:
             )
           else:
             if "UAAC" in str(res_data) or "鉴权" in str(res_data):
-              # 自动静默刷新后台 Cookie
+              # 自动刷新鉴权 Cookie
               self.sync_cookies_from_account_mgr(force_refresh=True)
             last_response_summary = f"返回数据非字典: {res_data}"
         except ValueError as ve:
