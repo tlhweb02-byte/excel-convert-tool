@@ -9,7 +9,7 @@ except ImportError:
 
 def render_ui():
   st.title("🎨 宝尊智能扩图 (ROSS)")
-  st.caption("选择图片并配置参数，自动调用宝尊 ROSS 引擎扩展背景。")
+  st.caption("全自动智能扩图中台，自动维护鉴权并调用宝尊 ROSS 引擎扩展背景。")
 
   col_left, col_right = st.columns(2)
 
@@ -41,7 +41,7 @@ def render_ui():
       bottom_d = st.number_input("下边距 (bottomDistance)", value=140, step=10)
       right_d = st.number_input("右边距 (rightDistance)", value=205, step=10)
 
-    # 自动推算最小画布大小 (原图尺寸 + 四周边距)
+    # 自动推算目标画布大小 (原图尺寸 + 四周边距)
     calc_bg_w = orig_w + left_d + right_d if uploaded_file else 800
     calc_bg_h = orig_h + top_d + bottom_d if uploaded_file else 800
 
@@ -50,14 +50,14 @@ def render_ui():
         value=calc_bg_w,
         min_value=orig_w,
         step=50,
-        help="必须大于或等于原图宽度",
+        help="自动计算：原图宽度 + 左边距 + 右边距",
     )
     bg_h = st.number_input(
         "目标画布总高度 (px)",
         value=calc_bg_h,
         min_value=orig_h,
         step=50,
-        help="必须大于或等于原图高度",
+        help="自动计算：原图高度 + 上边距 + 下边距",
     )
 
     gen_num = st.slider("生成图片数量", min_value=1, max_value=4, value=1)
@@ -69,6 +69,7 @@ def render_ui():
   if start_btn and uploaded_file:
     status_box = st.status("正在处理扩图任务...", expanded=True)
     try:
+      status_box.write("🔑 正在校验宝尊账号 UAAC 鉴权状态...")
       api = BaozunExpandAPI()
 
       status_box.write("正在上传图片到宝尊服务器...")
@@ -92,7 +93,7 @@ def render_ui():
           generated_num=gen_num,
       )
 
-      status_box.write("AI 正在渲染生成图片（正在查询生成进度）...")
+      status_box.write("AI 正在渲染生成图片（预估 1~2 分钟，请勿刷新）...")
       result_urls = api.get_image_expand_result(
           record_code, poll_interval=3, timeout=180
       )
