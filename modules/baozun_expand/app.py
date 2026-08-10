@@ -1,7 +1,6 @@
 from PIL import Image
 import streamlit as st
 
-# 兼容模块导入模式
 try:
   from .baozun_api import BaozunExpandAPI
 except ImportError:
@@ -20,7 +19,7 @@ def render_ui():
         "选择图片", type=["jpg", "jpeg", "png", "webp"]
     )
 
-    orig_w, orig_h = 390, 520
+    orig_w, orig_h = 800, 800
     if uploaded_file:
       image = Image.open(uploaded_file)
       orig_w, orig_h = image.size
@@ -31,20 +30,37 @@ def render_ui():
       )
 
   with col_right:
-    st.subheader("2. 扩图参数")
-    bg_w = st.number_input("画布目标宽度 (px)", value=800, step=50)
-    bg_h = st.number_input("画布目标高度 (px)", value=800, step=50)
+    st.subheader("2. 扩图参数设置")
 
-    st.write("**扩展边距距离 (px)**")
+    st.write("**扩展边距增加距离 (px)**")
     m_col1, m_col2 = st.columns(2)
     with m_col1:
-      top_d = st.number_input("上边距 (topDistance)", value=140)
-      left_d = st.number_input("左边距 (leftDistance)", value=205)
+      top_d = st.number_input("上边距 (topDistance)", value=140, step=10)
+      left_d = st.number_input("左边距 (leftDistance)", value=205, step=10)
     with m_col2:
-      bottom_d = st.number_input("下边距 (bottomDistance)", value=140)
-      right_d = st.number_input("右边距 (rightDistance)", value=205)
+      bottom_d = st.number_input("下边距 (bottomDistance)", value=140, step=10)
+      right_d = st.number_input("右边距 (rightDistance)", value=205, step=10)
 
-    gen_num = st.slider("生成图片数量", min_value=1, max_value=4, value=4)
+    # 自动推算最小画布大小 (原图尺寸 + 四周边距)
+    calc_bg_w = orig_w + left_d + right_d if uploaded_file else 800
+    calc_bg_h = orig_h + top_d + bottom_d if uploaded_file else 800
+
+    bg_w = st.number_input(
+        "目标画布总宽度 (px)",
+        value=calc_bg_w,
+        min_value=orig_w,
+        step=50,
+        help="必须大于或等于原图宽度",
+    )
+    bg_h = st.number_input(
+        "目标画布总高度 (px)",
+        value=calc_bg_h,
+        min_value=orig_h,
+        step=50,
+        help="必须大于或等于原图高度",
+    )
+
+    gen_num = st.slider("生成图片数量", min_value=1, max_value=4, value=1)
 
     start_btn = st.button(
         "✨ 立即生成", type="primary", disabled=(not uploaded_file)
@@ -60,7 +76,9 @@ def render_ui():
           uploaded_file.getvalue(), uploaded_file.name
       )
 
-      status_box.write("正在提交智能扩图任务...")
+      status_box.write(
+          f"正在提交智能扩图任务 (目标画布: {bg_w}x{bg_h}, 原图: {orig_w}x{orig_h})..."
+      )
       record_code = api.submit_image_expand(
           original_attachment_code=attachment_code,
           top_distance=top_d,
@@ -74,7 +92,7 @@ def render_ui():
           generated_num=gen_num,
       )
 
-      status_box.write("AI 正在渲染生成图片（预估等待 1~2 分钟，请勿刷新）...")
+      status_box.write("AI 正在渲染生成图片（正在查询生成进度）...")
       result_urls = api.get_image_expand_result(
           record_code, poll_interval=3, timeout=180
       )
