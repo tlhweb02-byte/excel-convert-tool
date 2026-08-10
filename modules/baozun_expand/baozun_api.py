@@ -28,7 +28,6 @@ class BaozunExpandAPI:
 
     def upload_image(self, file_bytes: bytes, filename: str) -> str:
         """1. 上传图片到宝尊节点，获取 originalAttachmentCode"""
-        # 优先尝试带 iforce/art/image/ 完整前缀的正确路由路径
         possible_urls = [
             f"{self.base_url}/iforce/art/image/upload/rename",
             f"{self.base_url}/iforce/art/image/upload",
@@ -50,19 +49,39 @@ class BaozunExpandAPI:
                     url, files=files, headers=headers, timeout=15
                 )
                 if resp.status_code == 200:
-                    res_json = resp.json()
-                    if res_json.get("success") or str(
-                        res_json.get("status")
-                    ) in ["200", "200.0"]:
-                        data = res_json.get("data", {})
-                        code = data.get(
-                            "originalAttachmentCode"
-                        ) or res_json.get("originalAttachmentCode")
-                        if code:
-                            return code
-                    attempt_logs.append(
-                        f"[{url}] 响应成功但未返回有效 code: {res_json}"
-                    )
+                    try:
+                        res_data = resp.json()
+                    except Exception:
+                        res_data = resp.text.strip().strip('"')
+
+                    # 情况 A：接口直接返回字符串 Code（如 "6a7929621b577a5f940c4282"）
+                    if isinstance(res_data, str) and res_data.strip():
+                        return res_data.strip().strip('"')
+
+                    # 情况 B：接口返回 JSON 字典对象
+                    elif isinstance(res_data, dict):
+                        if res_data.get("success") or str(
+                            res_data.get("status")
+                        ) in ["200", "200.0"]:
+                            data = res_data.get("data", {})
+                            if isinstance(data, dict):
+                                code = data.get("originalAttachmentCode")
+                            elif isinstance(data, str):
+                                code = data
+                            else:
+                                code = None
+                            code = code or res_data.get(
+                                "originalAttachmentCode"
+                            )
+                            if code:
+                                return code
+                        attempt_logs.append(
+                            f"[{url}] JSON 字典未包含 Code: {res_data}"
+                        )
+                    else:
+                        attempt_logs.append(
+                            f"[{url}] 无法识别的响应内容: {res_data}"
+                        )
                 else:
                     attempt_logs.append(f"[{url}] HTTP状态码 {resp.status_code}")
             except Exception as e:
