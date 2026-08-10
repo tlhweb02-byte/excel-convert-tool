@@ -59,11 +59,9 @@ class BaozunExpandAPI:
           except Exception:
             res_data = resp.text.strip().strip('"')
 
-          # 1.1 如果接口直接返回字符串 Code
           if isinstance(res_data, str) and res_data.strip():
             return res_data.strip().strip('"')
 
-          # 1.2 如果接口返回 JSON 字典
           elif isinstance(res_data, dict):
             data = res_data.get("data")
             if isinstance(data, str) and data.strip():
@@ -130,11 +128,9 @@ class BaozunExpandAPI:
     except Exception:
       res_data = resp.text.strip().strip('"')
 
-    # 2.1 如果直接返回 Code 字符串
     if isinstance(res_data, str) and res_data.strip():
       return res_data.strip().strip('"')
 
-    # 2.2 如果返回的是字典对象
     elif isinstance(res_data, dict):
       data = res_data.get("data")
       if isinstance(data, str) and data.strip():
@@ -157,16 +153,27 @@ class BaozunExpandAPI:
     url = f"{self.base_url}/iforce/art/image/getImageExpand"
     start_time = time.time()
 
+    last_response_summary = ""
+
     while time.time() - start_time < timeout:
-      try:
-        resp = self.session.get(
-            url, params={"recordCode": record_code}, timeout=15
-        )
-        if resp.status_code == 200:
+      resp = self.session.get(
+          url, params={"recordCode": record_code}, timeout=15
+      )
+
+      if resp.status_code != 200:
+        last_response_summary = f"HTTP {resp.status_code}: {resp.text[:150]}"
+      else:
+        try:
           res_data = resp.json()
           data = _safe_get(res_data, "data") or res_data
 
           if isinstance(data, dict):
+            if _safe_get(res_data, "success") is False:
+              raise ValueError(
+                  "服务器返回处理失败: "
+                  + str(_safe_get(res_data, "message", "未明原因"))
+              )
+
             result_list = _safe_get(data, "resultList", [])
             if result_list and isinstance(result_list, list):
               urls = [
@@ -177,12 +184,21 @@ class BaozunExpandAPI:
               ]
               if urls:
                 return urls
-      except Exception:
-        pass
+
+            status = _safe_get(data, "status") or _safe_get(res_data, "status")
+            msg = _safe_get(data, "message") or _safe_get(res_data, "message")
+            last_response_summary = (
+                f"接口返回 status={status}, msg={msg}, data={data}"
+            )
+          else:
+            last_response_summary = f"返回数据格式非字典: {data}"
+        except ValueError as ve:
+          raise ve
+        except Exception as e:
+          last_response_summary = f"解析 JSON 错误: {str(e)}"
 
       time.sleep(poll_interval)
 
     raise TimeoutError(
-        "扩图任务超时（已等待 3 分钟）。宝尊服务器生成较慢，请稍后重试或在 ROSS"
-        " 历史记录中查看。"
+        f"扩图任务超时（已等待 3 分钟）。宝尊服务器最新状态: {last_response_summary}"
     )
