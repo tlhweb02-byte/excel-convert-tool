@@ -1,6 +1,12 @@
 import time
 import requests
 
+# 自动接入账号与邮件验证码管理模块
+try:
+  from .account_api import BaozunAccountAPI, parse_cookie_string
+except ImportError:
+  from account_api import BaozunAccountAPI, parse_cookie_string
+
 
 def _safe_get(obj, key, default=None):
   """安全字段提取工具，防止对字符串等非字典类型调用 .get() 导致报错"""
@@ -11,12 +17,7 @@ def _safe_get(obj, key, default=None):
 
 class BaozunExpandAPI:
 
-  def __init__(
-      self,
-      base_url: str = "https://union-gateway.baozun.com",
-      cookies: dict = None,
-      headers: dict = None,
-  ):
+  def __init__(self, base_url: str = "https://union-gateway.baozun.com"):
     self.base_url = base_url.rstrip("/")
     self.session = requests.Session()
 
@@ -26,12 +27,22 @@ class BaozunExpandAPI:
             " (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         ),
     }
-    if headers:
-      default_headers.update(headers)
     self.session.headers.update(default_headers)
 
-    if cookies:
-      self.session.cookies.update(cookies)
+    # 自动获取并设置最新的有效 UAAC 鉴权 Cookie
+    self.account_mgr = BaozunAccountAPI()
+    self.sync_cookies_from_account_mgr()
+
+  def sync_cookies_from_account_mgr(self, force_refresh: bool = False):
+    """自动向 account_api 获取/强制刷新有效 Cookie"""
+    if force_refresh:
+      cookie_str = self.account_mgr.login_and_get_cookie_str()
+    else:
+      cookie_str = self.account_mgr.get_valid_cookie()
+
+    if cookie_str:
+      parsed_cookies = parse_cookie_string(cookie_str)
+      self.session.cookies.update(parsed_cookies)
 
   def upload_image(self, file_bytes: bytes, filename: str) -> str:
     """1. 上传图片到宝尊节点，获取 originalAttachmentCode"""
@@ -60,7 +71,10 @@ class BaozunExpandAPI:
             res_data = resp.text.strip().strip('"')
 
           if isinstance(res_data, str) and res_data.strip():
-            return res_data.strip().strip('"')
+            if "UAAC" in res_data or "鉴权" in res_data:
+              attempt_logs.append(f"[{url}] UAAC 鉴权失效")
+            else:
+              return res_data.strip().strip('"')
 
           elif isinstance(res_data, dict):
             data = res_data.get("data")
@@ -81,10 +95,42 @@ class BaozunExpandAPI:
       except Exception as e:
         attempt_logs.append(f"[{url}] 请求失败: {str(e)}")
 
+    # 若发现 UAAC 鉴权失效，自动静默刷新 Cookie 重试一次
+    if any("UAAC" in log for log in attempt_logs):
+      self.sync_cookies_from_account_mgr(force_refresh=True)
+      return self._retry_upload_once(file_bytes, filename)
+
     raise ValueError(
         "所有上传接口路由均未成功返回附件 Code。详细日志: "
         + " | ".join(attempt_logs)
     )
+
+  def _retry_upload_once(self, file_bytes: bytes, filename: str) -> str:
+    """内部静默重试上传"""
+    url = f"{self.base_url}/iforce/art/image/upload/rename"
+    headers = {
+        k: v for k, v in self.session.headers.items() if k.lower() != "content-type"
+    }
+    files = {"file": (filename, file_bytes)}
+    resp = self.session.post(url, files=files, headers=headers, timeout=15)
+    resp.raise_for_status()
+    try:
+      res_data = resp.json()
+    except Exception:
+      res_data = resp.text.strip().strip('"')
+
+    if isinstance(res_data, str) and res_data.strip():
+      return res_data.strip().strip('"')
+    elif isinstance(res_data, dict):
+      data = res_data.get("data")
+      code = (
+          _safe_get(data, "originalAttachmentCode")
+          or _safe_get(res_data, "originalAttachmentCode")
+          or _safe_get(res_data, "code")
+      )
+      if code:
+        return str(code)
+    raise ValueError(f"鉴权刷新后重试上传仍然失败: {res_data}")
 
   def submit_image_expand(
       self,
@@ -129,9 +175,15 @@ class BaozunExpandAPI:
       res_data = resp.text.strip().strip('"')
 
     if isinstance(res_data, str) and res_data.strip():
-      return res_data.strip().strip('"')
+      if "UAAC" in res_data or "鉴权" in res_data:
+        # 自动触发后台鉴权刷新，并重新提交
+        self.sync_cookies_from_account_mgr(force_refresh=True)
+        resp = self.session.post(url, json=payload, timeout=15)
+        res_data = resp.json()
+      else:
+        return res_data.strip().strip('"')
 
-    elif isinstance(res_data, dict):
+    if isinstance(res_data, dict):
       data = res_data.get("data")
       if isinstance(data, str) and data.strip():
         return data.strip().strip('"')
@@ -191,7 +243,10 @@ class BaozunExpandAPI:
                 f"接口返回 status={status}, msg={msg}, data={data}"
             )
           else:
-            last_response_summary = f"返回数据格式非字典: {data}"
+            if "UAAC" in str(res_data) or "鉴权" in str(res_data):
+              # 自动静默刷新后台 Cookie
+              self.sync_cookies_from_account_mgr(force_refresh=True)
+            last_response_summary = f"返回数据非字典: {res_data}"
         except ValueError as ve:
           raise ve
         except Exception as e:
