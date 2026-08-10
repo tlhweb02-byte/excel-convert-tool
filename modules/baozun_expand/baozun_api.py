@@ -1,261 +1,209 @@
+import email
+import imaplib
+import json
+import os
+import re
 import time
+from playwright.sync_api import sync_playwright
 import requests
 
-try:
-  from .account_api import BaozunAccountAPI, parse_cookie_string
-except ImportError:
-  from account_api import BaozunAccountAPI, parse_cookie_string
+# 本地 Cookie 缓存路径
+COOKIE_CACHE_FILE = os.path.join(
+    os.path.dirname(__file__), "baozun_cookie_cache.json"
+)
 
 
-def _safe_get(obj, key, default=None):
-  """安全字段提取工具，防止对字符串等非字典类型调用 .get() 导致报错"""
-  if isinstance(obj, dict):
-    return obj.get(key, default)
-  return default
+def parse_cookie_string(cookie_str: str) -> dict:
+  """解析 Cookie 字符串为字典格式"""
+  cookies = {}
+  if not cookie_str:
+    return cookies
+  for item in cookie_str.split(";"):
+    if "=" in item:
+      key, val = item.strip().split("=", 1)
+      cookies[key.strip()] = val.strip()
+  return cookies
 
 
-class BaozunExpandAPI:
+class BaozunAccountAPI:
 
-  def __init__(self, base_url: str = "https://union-gateway.baozun.com"):
-    self.base_url = base_url.rstrip("/")
-    self.session = requests.Session()
-
-    default_headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-            " (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        ),
-    }
-    self.session.headers.update(default_headers)
-
-    # 自动初始化账号鉴权管理器，并同步有效 Cookie
-    self.account_mgr = BaozunAccountAPI()
-    self.sync_cookies_from_account_mgr()
-
-  def sync_cookies_from_account_mgr(self, force_refresh: bool = False):
-    """同步 account_api 中的有效 Cookie"""
-    if force_refresh:
-      cookie_str = self.account_mgr.login_and_get_cookie_str()
-    else:
-      cookie_str = self.account_mgr.get_valid_cookie()
-
-    if cookie_str:
-      parsed_cookies = parse_cookie_string(cookie_str)
-      self.session.cookies.update(parsed_cookies)
-
-  def upload_image(self, file_bytes: bytes, filename: str) -> str:
-    """1. 上传图片到宝尊节点，获取 originalAttachmentCode"""
-    possible_urls = [
-        f"{self.base_url}/iforce/art/image/upload/rename",
-        f"{self.base_url}/iforce/art/image/upload",
-        f"{self.base_url}/iforce/art/upload/rename",
-        f"{self.base_url}/upload/rename",
-    ]
-
-    headers = {
-        k: v for k, v in self.session.headers.items() if k.lower() != "content-type"
-    }
-    files = {"file": (filename, file_bytes)}
-
-    attempt_logs = []
-    for url in possible_urls:
-      try:
-        # timeout=(连接超时10s, 写入/传输超时60s)
-        resp = self.session.post(
-            url, files=files, headers=headers, timeout=(10, 60)
-        )
-        if resp.status_code == 200:
-          try:
-            res_data = resp.json()
-          except Exception:
-            res_data = resp.text.strip().strip('"')
-
-          if isinstance(res_data, str) and res_data.strip():
-            if "UAAC" in res_data or "鉴权" in res_data:
-              attempt_logs.append(f"[{url}] UAAC 鉴权失效")
-            else:
-              return res_data.strip().strip('"')
-
-          elif isinstance(res_data, dict):
-            data = res_data.get("data")
-            if isinstance(data, str) and data.strip():
-              return data.strip().strip('"')
-
-            code = (
-                _safe_get(data, "originalAttachmentCode")
-                or _safe_get(res_data, "originalAttachmentCode")
-                or _safe_get(res_data, "code")
-            )
-            if code:
-              return str(code)
-
-            attempt_logs.append(f"[{url}] JSON 字典未包含 Code: {res_data}")
-        else:
-          attempt_logs.append(f"[{url}] HTTP状态码 {resp.status_code}")
-      except Exception as e:
-        attempt_logs.append(f"[{url}] 请求失败: {str(e)}")
-
-    # 如果检测到 UAAC 鉴权失败，自动静默刷新 Cookie 并重试一次
-    if any("UAAC" in log for log in attempt_logs):
-      self.sync_cookies_from_account_mgr(force_refresh=True)
-      return self._retry_upload_once(file_bytes, filename)
-
-    raise ValueError(
-        "所有上传接口路由均未成功返回附件 Code。详细日志: "
-        + " | ".join(attempt_logs)
-    )
-
-  def _retry_upload_once(self, file_bytes: bytes, filename: str) -> str:
-    """鉴权刷新后的单次上传重试"""
-    url = f"{self.base_url}/iforce/art/image/upload/rename"
-    headers = {
-        k: v for k, v in self.session.headers.items() if k.lower() != "content-type"
-    }
-    files = {"file": (filename, file_bytes)}
-    resp = self.session.post(
-        url, files=files, headers=headers, timeout=(10, 60)
-    )
-    resp.raise_for_status()
-    try:
-      res_data = resp.json()
-    except Exception:
-      res_data = resp.text.strip().strip('"')
-
-    if isinstance(res_data, str) and res_data.strip():
-      return res_data.strip().strip('"')
-    elif isinstance(res_data, dict):
-      data = res_data.get("data")
-      code = (
-          _safe_get(data, "originalAttachmentCode")
-          or _safe_get(res_data, "originalAttachmentCode")
-          or _safe_get(res_data, "code")
-      )
-      if code:
-        return str(code)
-    raise ValueError(f"重试上传仍然失败: {res_data}")
-
-  def submit_image_expand(
+  def __init__(
       self,
-      original_attachment_code: str,
-      top_distance: int = 140,
-      bottom_distance: int = 140,
-      left_distance: int = 205,
-      right_distance: int = 205,
-      background_weight: int = 800,
-      background_height: int = 800,
-      original_weight: int = 390,
-      original_height: int = 520,
-      generated_num: int = 4,
-      ratio: str = "free",
-      prompt: str = "",
+      username: str = "JM038153",  # 填入您的宝尊账号
+      password: str = "Xl@20177",  # 填入您的宝尊密码
+      qq_email: str = "805559297@qq.com",  # 填入您的 QQ 邮箱
+      qq_auth_code: str = "ucsmhjdaxhvwbcge",  # 填入 QQ 邮箱 IMAP 授权码
+      imap_server: str = "imap.qq.com",
+  ):
+    self.username = username
+    self.password = password
+    self.qq_email = qq_email
+    self.qq_auth_code = qq_auth_code
+    self.imap_server = imap_server
+    self.login_url = "https://account-dop.baozun.com/login?redirectUrl=https%3A%2F%2Fross.baozun.com&appkey=ross-modern-api&lang=zh_CN"
+
+  def fetch_latest_email_otp(
+      self, timeout: int = 60, poll_interval: int = 3
   ) -> str:
-    """2. 提交扩图任务，获取 recordCode"""
-    url = f"{self.base_url}/iforce/art/image/imageExpand"
-
-    payload = {
-        "originalAttachmentCode": original_attachment_code,
-        "topDistance": top_distance,
-        "bottomDistance": bottom_distance,
-        "leftDistance": left_distance,
-        "rightDistance": right_distance,
-        "backgroundWeight": background_weight,
-        "backgroundHeight": background_height,
-        "originalWeight": original_weight,
-        "originalHeight": original_height,
-        "generatedNum": generated_num,
-        "ratio": ratio,
-        "prompt": prompt,
-        "generateChannel": 110,
-    }
-
-    resp = self.session.post(url, json=payload, timeout=15)
-    resp.raise_for_status()
-
-    try:
-      res_data = resp.json()
-    except Exception:
-      res_data = resp.text.strip().strip('"')
-
-    if isinstance(res_data, str) and res_data.strip():
-      if "UAAC" in res_data or "鉴权" in res_data:
-        # 自动触发 Cookie 刷新并重试
-        self.sync_cookies_from_account_mgr(force_refresh=True)
-        resp = self.session.post(url, json=payload, timeout=15)
-        res_data = resp.json()
-      else:
-        return res_data.strip().strip('"')
-
-    if isinstance(res_data, dict):
-      data = res_data.get("data")
-      if isinstance(data, str) and data.strip():
-        return data.strip().strip('"')
-
-      record_code = (
-          _safe_get(data, "recordCode")
-          or _safe_get(res_data, "recordCode")
-          or _safe_get(res_data, "id")
-      )
-      if record_code:
-        return str(record_code)
-
-    raise ValueError(f"提交扩图任务失败，返回内容为: {res_data}")
-
-  def get_image_expand_result(
-      self, record_code: str, poll_interval: int = 3, timeout: int = 180
-  ) -> list:
-    """3. 轮询获取扩图生成结果，返回图片 URL 列表"""
-    url = f"{self.base_url}/iforce/art/image/getImageExpand"
+    """从 QQ 邮箱秒级提取 Outlook 自动转发过来的宝尊 6 位验证码"""
     start_time = time.time()
 
-    last_response_summary = ""
-
     while time.time() - start_time < timeout:
-      resp = self.session.get(
-          url, params={"recordCode": record_code}, timeout=15
-      )
+      try:
+        mail = imaplib.IMAP4_SSL(self.imap_server, 993)
+        mail.login(self.qq_email, self.qq_auth_code)
+        mail.select("INBOX")
 
-      if resp.status_code != 200:
-        last_response_summary = f"HTTP {resp.status_code}: {resp.text[:150]}"
-      else:
-        try:
-          res_data = resp.json()
-          data = _safe_get(res_data, "data") or res_data
+        _, search_data = mail.search(None, "ALL")
+        mail_ids = search_data[0].split()[-5:]
 
-          if isinstance(data, dict):
-            if _safe_get(res_data, "success") is False:
-              raise ValueError(
-                  "服务器返回处理失败: "
-                  + str(_safe_get(res_data, "message", "未明原因"))
-              )
+        for mail_id in reversed(mail_ids):
+          _, msg_data = mail.fetch(mail_id, "(RFC822)")
+          for response_part in msg_data:
+            if isinstance(response_part, tuple):
+              msg = email.message_from_bytes(response_part)
 
-            result_list = _safe_get(data, "resultList", [])
-            if result_list and isinstance(result_list, list):
-              urls = [
-                  _safe_get(item, "attachmentPath")
-                  for item in result_list
-                  if isinstance(item, dict)
-                  and _safe_get(item, "attachmentPath")
-              ]
-              if urls:
-                return urls
+              body = ""
+              if msg.is_multipart():
+                for part in msg.walk():
+                  if part.get_content_type() in ["text/plain", "text/html"]:
+                    body += part.get_payload(decode=True).decode(
+                        "utf-8", errors="ignore"
+                    )
+              else:
+                body = msg.get_payload(decode=True).decode(
+                    "utf-8", errors="ignore"
+                )
 
-            status = _safe_get(data, "status") or _safe_get(res_data, "status")
-            msg = _safe_get(data, "message") or _safe_get(res_data, "message")
-            last_response_summary = (
-                f"接口返回 status={status}, msg={msg}, data={data}"
-            )
-          else:
-            if "UAAC" in str(res_data) or "鉴权" in str(res_data):
-              # 自动刷新鉴权 Cookie
-              self.sync_cookies_from_account_mgr(force_refresh=True)
-            last_response_summary = f"返回数据非字典: {res_data}"
-        except ValueError as ve:
-          raise ve
-        except Exception as e:
-          last_response_summary = f"解析 JSON 错误: {str(e)}"
+              if "验证码" in body or "UAC" in body or "宝尊" in body:
+                codes = re.findall(r"\b\d{6}\b", body)
+                if codes:
+                  mail.logout()
+                  return codes[0]
+
+        mail.logout()
+      except Exception as e:
+        print(f"自动提取验证码中: {e}")
 
       time.sleep(poll_interval)
 
-    raise TimeoutError(
-        f"扩图任务超时（已等待 3 分钟）。宝尊服务器最新状态: {last_response_summary}"
-    )
+    raise TimeoutError("读取验证码超时，请确认 Outlook 自动转发配置")
+
+  def login_and_get_cookie_str(self) -> str:
+    """用 Playwright 在后台精准模拟多层登录页面，自动提取 Cookie"""
+    print("[后台自动登录] 正在启动后台浏览器执行登录...")
+    with sync_playwright() as p:
+      # 启动后台无头浏览器（不弹窗）
+      browser = p.chromium.launch(
+          headless=True,
+          args=["--no-sandbox", "--disable-setuid-sandbox"],
+      )
+      context = browser.new_context()
+      page = context.new_page()
+
+      try:
+        # 1. 打开宝尊 dop 登录统一入口
+        page.goto(self.login_url, timeout=30000)
+        page.wait_for_load_state("networkidle")
+
+        # 2. 填写账号与密码
+        page.fill(
+            'input[type="text"], input[placeholder*="账号"],'
+            ' input[placeholder*="用户名"]',
+            self.username,
+        )
+        page.fill('input[type="password"]', self.password)
+
+        # 点击登录按钮提交
+        page.click(
+            'button:has-text("登录"), input[type="submit"],'
+            ' .el-button--primary'
+        )
+        time.sleep(2)
+
+        # 3. 如果需要验证码，自动点击发送验证码按钮
+        send_code_btn = page.query_selector(
+            'button:has-text("验证码"), button:has-text("发送"),'
+            ' :text("获取验证码")'
+        )
+        if send_code_btn:
+          send_code_btn.click()
+          time.sleep(2)
+
+        # 4. 从 QQ 邮箱自动拿验证码
+        print("[后台自动登录] 正在等待 Outlook 转发验证码邮件...")
+        otp_code = self.fetch_latest_email_otp(timeout=45)
+        print(f"[后台自动登录] 成功获取到验证码: {otp_code}")
+
+        # 5. 自动填入验证码并确认
+        page.fill(
+            'input[placeholder*="验证码"], input[name*="code"]', otp_code
+        )
+        page.click(
+            'button:has-text("确定"), button:has-text("登录"),'
+            ' button:has-text("提交")'
+        )
+
+        # 6. 等待成功跳转
+        time.sleep(3)
+
+        # 7. 提取 Cookies
+        cookies = context.cookies()
+        cookie_str = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
+
+        browser.close()
+
+        # 缓存到本地
+        self.save_cached_cookie(cookie_str)
+        print("[后台自动登录] 登录成功，已更新宝尊鉴权 Cookie！")
+        return cookie_str
+
+      except Exception as e:
+        browser.close()
+        raise RuntimeError(f"Playwright 后台自动登录失败: {str(e)}")
+
+  def get_valid_cookie(self) -> str:
+    """对外入口：优先使用本地缓存 Cookie，失效时才自动启动后台无头浏览器登录"""
+    cached_cookie = self.load_cached_cookie()
+    if cached_cookie and self.check_cookie_valid(cached_cookie):
+      return cached_cookie
+
+    return self.login_and_get_cookie_str()
+
+  def check_cookie_valid(self, cookie_str: str) -> bool:
+    """校验 Cookie 是否依然具备请求权限"""
+    try:
+      headers = {
+          "Cookie": cookie_str,
+          "User-Agent": (
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+          ),
+      }
+      resp = requests.get(
+          "https://union-gateway.baozun.com/iforce/art/image/getImageExpand",
+          params={"recordCode": "test"},
+          headers=headers,
+          timeout=5,
+      )
+      if resp.status_code == 200 and "UAAC" not in resp.text:
+        return True
+    except Exception:
+      pass
+    return False
+
+  def save_cached_cookie(self, cookie_str: str):
+    try:
+      with open(COOKIE_CACHE_FILE, "w", encoding="utf-8") as f:
+        json.dump({"cookie": cookie_str, "update_time": time.time()}, f)
+    except Exception:
+      pass
+
+  def load_cached_cookie(self) -> str:
+    if os.path.exists(COOKIE_CACHE_FILE):
+      try:
+        with open(COOKIE_CACHE_FILE, "r", encoding="utf-8") as f:
+          data = json.load(f)
+          return data.get("cookie", "")
+      except Exception:
+        pass
+    return ""
