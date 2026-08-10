@@ -1,14 +1,13 @@
 from PIL import Image
 import streamlit as st
 
-# 导入 API 封装类
+# 兼容模块导入模式
 try:
   from .baozun_api import BaozunExpandAPI
 except ImportError:
   from modules.baozun_expand.baozun_api import BaozunExpandAPI
 
 
-# 关键：函数名必须叫做 render_ui
 def render_ui():
   st.title("🎨 宝尊智能扩图 (ROSS)")
   st.caption("选择图片并配置参数，自动调用宝尊 ROSS 引擎扩展背景。")
@@ -75,8 +74,10 @@ def render_ui():
           generated_num=gen_num,
       )
 
-      status_box.write("AI 正在渲染生成图片...")
-      result_urls = api.get_image_expand_result(record_code)
+      status_box.write("AI 正在渲染生成图片（预估等待 1~2 分钟，请勿刷新）...")
+      result_urls = api.get_image_expand_result(
+          record_code, poll_interval=3, timeout=180
+      )
 
       status_box.update(
           label="🎉 扩图生成完成！", state="complete", expanded=False
