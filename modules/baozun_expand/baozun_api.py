@@ -2,6 +2,13 @@ import time
 import requests
 
 
+def _safe_get(obj, key, default=None):
+    """安全字段提取工具，防止对字符串等非字典类型调用 .get() 导致报错"""
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return default
+
+
 class BaozunExpandAPI:
 
     def __init__(
@@ -54,33 +61,26 @@ class BaozunExpandAPI:
                     except Exception:
                         res_data = resp.text.strip().strip('"')
 
-                    # 情况 A：接口直接返回字符串 Code（如 "6a7929621b577a5f940c4282"）
+                    # 1.1 如果接口直接返回字符串 Code
                     if isinstance(res_data, str) and res_data.strip():
                         return res_data.strip().strip('"')
 
-                    # 情况 B：接口返回 JSON 字典对象
+                    # 1.2 如果接口返回 JSON 字典
                     elif isinstance(res_data, dict):
-                        if res_data.get("success") or str(
-                            res_data.get("status")
-                        ) in ["200", "200.0"]:
-                            data = res_data.get("data", {})
-                            if isinstance(data, dict):
-                                code = data.get("originalAttachmentCode")
-                            elif isinstance(data, str):
-                                code = data
-                            else:
-                                code = None
-                            code = code or res_data.get(
-                                "originalAttachmentCode"
-                            )
-                            if code:
-                                return code
+                        data = res_data.get("data")
+                        if isinstance(data, str) and data.strip():
+                            return data.strip().strip('"')
+
+                        code = (
+                            _safe_get(data, "originalAttachmentCode")
+                            or _safe_get(res_data, "originalAttachmentCode")
+                            or _safe_get(res_data, "code")
+                        )
+                        if code:
+                            return str(code)
+
                         attempt_logs.append(
                             f"[{url}] JSON 字典未包含 Code: {res_data}"
-                        )
-                    else:
-                        attempt_logs.append(
-                            f"[{url}] 无法识别的响应内容: {res_data}"
                         )
                 else:
                     attempt_logs.append(f"[{url}] HTTP状态码 {resp.status_code}")
@@ -88,7 +88,7 @@ class BaozunExpandAPI:
                 attempt_logs.append(f"[{url}] 请求失败: {str(e)}")
 
         raise ValueError(
-            "所有上传接口路由均未成功返回附件 Code。详细尝试日志: "
+            "所有上传接口路由均未成功返回附件 Code。详细日志: "
             + " | ".join(attempt_logs)
         )
 
@@ -128,17 +128,31 @@ class BaozunExpandAPI:
 
         resp = self.session.post(url, json=payload, timeout=15)
         resp.raise_for_status()
-        res_json = resp.json()
 
-        if res_json.get("success") or str(res_json.get("status")) in [
-            "200",
-            "200.0",
-        ]:
-            data = res_json.get("data", {})
-            return data.get("recordCode") or res_json.get("recordCode")
-        raise ValueError(
-            f"提交扩图任务失败: {res_json.get('message', '未知错误')}"
-        )
+        try:
+            res_data = resp.json()
+        except Exception:
+            res_data = resp.text.strip().strip('"')
+
+        # 2.1 如果直接返回 Code 字符串
+        if isinstance(res_data, str) and res_data.strip():
+            return res_data.strip().strip('"')
+
+        # 2.2 如果返回的是字典对象
+        elif isinstance(res_data, dict):
+            data = res_data.get("data")
+            if isinstance(data, str) and data.strip():
+                return data.strip().strip('"')
+
+            record_code = (
+                _safe_get(data, "recordCode")
+                or _safe_get(res_data, "recordCode")
+                or _safe_get(res_data, "id")
+            )
+            if record_code:
+                return str(record_code)
+
+        raise ValueError(f"提交扩图任务失败，返回内容为: {res_data}")
 
     def get_image_expand_result(
         self, record_code: str, poll_interval: int = 2, timeout: int = 60
@@ -152,12 +166,25 @@ class BaozunExpandAPI:
                 url, params={"recordCode": record_code}, timeout=15
             )
             resp.raise_for_status()
-            res_json = resp.json()
 
-            data = res_json.get("data", res_json)
-            result_list = data.get("resultList", [])
-            if result_list:
-                return [item["attachmentPath"] for item in result_list]
+            try:
+                res_data = resp.json()
+            except Exception:
+                res_data = {}
+
+            if isinstance(res_data, dict):
+                data = res_data.get("data")
+                target_dict = data if isinstance(data, dict) else res_data
+                result_list = _safe_get(target_dict, "resultList", [])
+                if result_list and isinstance(result_list, list):
+                    urls = [
+                        _safe_get(item, "attachmentPath")
+                        for item in result_list
+                        if isinstance(item, dict)
+                        and _safe_get(item, "attachmentPath")
+                    ]
+                    if urls:
+                        return urls
 
             time.sleep(poll_interval)
 
