@@ -27,16 +27,8 @@ class BaozunExpandAPI:
         if cookies:
             self.session.cookies.update(cookies)
 
-def upload_image(self, file_bytes: bytes, filename: str) -> str:
-        """1. 上传图片到宝尊节点，获取 originalAttachmentCode"""
-        # 网关完整路由路径列表（优先尝试带 iforce/art/image 前缀的完整路径）
-        possible_urls = [
-            f"{self.base_url}/iforce/art/image/upload/rename",
-            f"{self.base_url}/iforce/art/upload/rename",
-            f"{self.base_url}/iforce/upload/rename",
-            f"{self.base_url}/upload/rename",
-        ]
-
+    def upload_image(self, file_bytes: bytes, filename: str) -> str:
+        url = f"{self.base_url}/upload/rename"
         headers = {
             k: v
             for k, v in self.session.headers.items()
@@ -44,37 +36,22 @@ def upload_image(self, file_bytes: bytes, filename: str) -> str:
         }
         files = {"file": (filename, file_bytes)}
 
-        last_resp_msg = ""
-        for url in possible_urls:
-            try:
-                resp = requests.post(
-                    url,
-                    files=files,
-                    cookies=self.session.cookies,
-                    headers=headers,
-                    timeout=10,
-                )
-                if resp.status_code == 200:
-                    res_json = resp.json()
-                    if res_json.get("success") or res_json.get("status") in [
-                        200,
-                        "200",
-                    ]:
-                        data = res_json.get("data", {})
-                        code = data.get("originalAttachmentCode") or res_json.get(
-                            "originalAttachmentCode"
-                        )
-                        if code:
-                            return code
-                last_resp_msg = f"Status {resp.status_code}: {resp.text[:100]}"
-            except Exception as e:
-                last_resp_msg = str(e)
-
-        raise ValueError(
-            f"图片上传接口路由匹配失败，请在 F12 中确认上传接口的完整 URL。详细信息: {last_resp_msg}"
+        resp = requests.post(
+            url, files=files, cookies=self.session.cookies, headers=headers
         )
- 
-def submit_image_expand(
+        resp.raise_for_status()
+        res_json = resp.json()
+
+        if res_json.get("success") or res_json.get("status") in [200, "200"]:
+            data = res_json.get("data", {})
+            return data.get(
+                "originalAttachmentCode"
+            ) or res_json.get("originalAttachmentCode")
+        raise ValueError(
+            f"图片上传失败: {res_json.get('message', '未知错误')}"
+        )
+
+    def submit_image_expand(
         self,
         original_attachment_code: str,
         top_distance: int = 140,
