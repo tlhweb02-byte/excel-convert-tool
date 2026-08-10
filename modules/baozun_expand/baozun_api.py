@@ -1,7 +1,6 @@
 from PIL import Image
 import io
 import streamlit as st
-from modules.baozun_expand.baozun_api import BaozunExpandAPI
 
 
 def render_baozun_expand_module():
