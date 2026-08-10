@@ -85,16 +85,14 @@ def _get_worksheet():
             except gspread.exceptions.SpreadsheetNotFound:
                 return None, f"未找到名为 `{SPREADSHEET_NAME}` 的 Google 表格，或未将该表格共享给服务账号邮箱"
             ws = sh.sheet1
-            headers = ws.row_values(1)
-            if not headers:
-                ws.append_row(["date", "compressed_images", "saved_bytes", "excel_cleaned", "last_updated"])
             return ws, None
         except Exception as e:
             return None, f"访问表格发生错误: {e}"
     return None, err
 
+@st.cache_data(ttl=30)
 def _load_all_records():
-    """优先从 Google Sheets 读取全量统计记录字典，未配置时回退读取本地 JSON"""
+    """使用 @st.cache_data(ttl=30) 进行 30 秒数据缓存，防止频率过高触爆 Google 60次/分钟配额限制"""
     ws, err = _get_worksheet()
     if ws:
         try:
@@ -138,6 +136,15 @@ def _save_stats(data):
                 int(today_data.get("excel_cleaned", 0)),
                 str(today_data.get("last_updated", ""))
             ]
+            
+            # 检查是否有表头，没有则追加表头
+            try:
+                headers = ws.row_values(1)
+                if not headers:
+                    ws.append_row(["date", "compressed_images", "saved_bytes", "excel_cleaned", "last_updated"])
+            except Exception:
+                pass
+
             try:
                 cell = ws.find(today, in_column=1)
             except Exception:
@@ -148,6 +155,12 @@ def _save_stats(data):
                 ws.update(range_name=range_label, values=[row_data])
             else:
                 ws.append_row(row_data)
+            
+            # 写入成功后，主动清除读取缓存
+            try:
+                _load_all_records.clear()
+            except Exception:
+                pass
             return
         except Exception as e:
             print(f"Save to Sheet Error: {e}")
@@ -375,5 +388,4 @@ def render_ui():
     else:
         st.write("暂无对应时间段的提效明细数据。")
         
-    if st.button("🔄 刷新数据"):
-        st.rerun()
+    if st.button("🔄 刷新
