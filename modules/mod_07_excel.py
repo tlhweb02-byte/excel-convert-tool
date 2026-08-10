@@ -3,7 +3,11 @@ import pandas as pd
 import numpy as np
 import io
 import re
-from modules import mod_stats
+
+try:
+    from modules import mod_stats
+except ImportError:
+    import mod_stats
 
 def simplify_title(row):
     name_str = str(row.get('名称', '')).strip() if pd.notna(row.get('名称')) else ""
