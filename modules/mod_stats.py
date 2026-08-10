@@ -11,19 +11,14 @@ try:
 except ImportError:
     GSPREAD_AVAILABLE = False
 
-# 本地数据持久化文件路径 (备用/本地模式)
 STATS_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "stats_data.json")
-
-# Google Sheets 表格名称（需在 Google Drive 中共享给服务账号）
 SPREADSHEET_NAME = "提效中台数据统计"
-
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
 ]
 
 def _safe_int(val):
-    """安全转换为整数，防御字符串表头干扰"""
     try:
         return int(val)
     except (ValueError, TypeError):
@@ -31,18 +26,14 @@ def _safe_int(val):
 
 @st.cache_resource
 def get_gspread_client():
-    """获取与 Google Sheets 交互的 Client 凭据"""
     if not GSPREAD_AVAILABLE:
-        return None, "缺失 `gspread` 或 `google-auth` 依赖库，请检查 `requirements.txt`"
+        return None, "缺失 gspread 或 google-auth 依赖库，请检查 requirements.txt"
     try:
         b64_val = None
-        # 1. 检查根路径下的 gcp_service_account_base64
         if "gcp_service_account_base64" in st.secrets:
             b64_val = str(st.secrets["gcp_service_account_base64"]).strip()
-        # 2. 检查嵌套在 [gcp_service_account] 下的 gcp_service_account_base64
         elif "gcp_service_account" in st.secrets and isinstance(st.secrets["gcp_service_account"], dict) and "gcp_service_account_base64" in st.secrets["gcp_service_account"]:
             b64_val = str(st.secrets["gcp_service_account"]["gcp_service_account_base64"]).strip()
-        # 3. 检查 [gcp_service_account] 本身是否就是字符串
         elif "gcp_service_account" in st.secrets and isinstance(st.secrets["gcp_service_account"], str):
             b64_val = str(st.secrets["gcp_service_account"]).strip()
 
@@ -52,7 +43,6 @@ def get_gspread_client():
             creds = Credentials.from_service_account_info(sec_dict, scopes=SCOPES)
             return gspread.authorize(creds), None
 
-        # 4. 备用读取普通结构字典模式
         if "gcp_service_account" in st.secrets:
             raw_sec = st.secrets["gcp_service_account"]
             if isinstance(raw_sec, str):
@@ -76,14 +66,13 @@ def get_gspread_client():
         return None, f"Secrets 解析失败: {e}"
 
 def _get_worksheet():
-    """获取或初始化 Google Sheet 工作表"""
     client, err = get_gspread_client()
     if client:
         try:
             try:
                 sh = client.open(SPREADSHEET_NAME)
             except gspread.exceptions.SpreadsheetNotFound:
-                return None, f"未找到名为 `{SPREADSHEET_NAME}` 的 Google 表格，或未将该表格共享给服务账号邮箱"
+                return None, f"未找到名为 {SPREADSHEET_NAME} 的 Google 表格，或未共享权限"
             ws = sh.sheet1
             return ws, None
         except Exception as e:
@@ -92,7 +81,6 @@ def _get_worksheet():
 
 @st.cache_data(ttl=30)
 def _load_all_records():
-    """使用 @st.cache_data(ttl=30) 进行 30 秒数据缓存，防止频率过高触爆 Google 60次/分钟配额限制"""
     ws, err = _get_worksheet()
     if ws:
         try:
@@ -100,7 +88,6 @@ def _load_all_records():
             stats_dict = {}
             for r in records:
                 d = str(r.get("date", "")).strip()
-                # 智能识别并剔除重复表头行
                 if d and d.lower() != "date":
                     stats_dict[d] = {
                         "compressed_images": _safe_int(r.get("compressed_images", 0)),
@@ -112,7 +99,6 @@ def _load_all_records():
         except Exception as e:
             return {}, f"读取 Sheet 数据解析失败: {e}"
 
-    # 回退到本地 JSON 模式
     if os.path.exists(STATS_FILE_PATH):
         try:
             with open(STATS_FILE_PATH, "r", encoding="utf-8") as f:
@@ -122,7 +108,6 @@ def _load_all_records():
     return {}, f"（未连通云端数据库: {err}）"
 
 def _save_stats(data):
-    """写回 Google Sheets，若未配置则回退写入本地 JSON 文件"""
     today = get_today_key()
     today_data = data.get(today, {})
     ws, err = _get_worksheet()
@@ -137,7 +122,6 @@ def _save_stats(data):
                 str(today_data.get("last_updated", ""))
             ]
             
-            # 检查是否有表头，没有则追加表头
             try:
                 headers = ws.row_values(1)
                 if not headers:
@@ -156,7 +140,6 @@ def _save_stats(data):
             else:
                 ws.append_row(row_data)
             
-            # 写入成功后，主动清除读取缓存
             try:
                 _load_all_records.clear()
             except Exception:
@@ -165,7 +148,6 @@ def _save_stats(data):
         except Exception as e:
             print(f"Save to Sheet Error: {e}")
 
-    # 回退写入本地 JSON
     try:
         with open(STATS_FILE_PATH, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
@@ -173,11 +155,9 @@ def _save_stats(data):
         print(f"Save local stats error: {e}")
 
 def get_today_key():
-    """获取当前日期 Key (YYYY-MM-DD)"""
     return datetime.date.today().isoformat()
 
 def aggregate_stats_by_prefix(prefix=""):
-    """按日期前缀聚合统计数据"""
     all_data, err = _load_all_records()
     compressed_images = 0
     saved_bytes = 0
@@ -196,7 +176,6 @@ def aggregate_stats_by_prefix(prefix=""):
     }, err
 
 def record_image_compression(count=1, saved_bytes=0):
-    """记录图片压缩调用与空间节省量"""
     if count <= 0:
         return
     all_data, _ = _load_all_records()
@@ -214,7 +193,6 @@ def record_image_compression(count=1, saved_bytes=0):
     _save_stats(all_data)
 
 def record_excel_cleaning(count=1):
-    """记录 Excel 表格清洗转化调用"""
     if count <= 0:
         return
     all_data, _ = _load_all_records()
@@ -231,12 +209,10 @@ def record_excel_cleaning(count=1):
     _save_stats(all_data)
 
 def calculate_hours_saved(excel_cleaned, compressed_images):
-    """预估节约机械重复劳动小时数"""
     hours = (excel_cleaned * 0.5) + (compressed_images * 0.05)
     return round(hours, 2)
 
 def format_bytes_to_gb(saved_bytes):
-    """格式化节省的空间显示 (GB / MB)"""
     gb = saved_bytes / (1024 ** 3)
     if gb >= 0.01:
         return f"{gb:.2f} GB"
@@ -248,7 +224,6 @@ def format_bytes_to_gb(saved_bytes):
             return f"{gb:.3f} GB"
 
 def get_achievement_badge(hours):
-    """根据节约工时评定成就称号与勋章"""
     if hours == 0:
         return "🌱 提效新星", "准备就绪！选择上方功能进行自动化，解锁提效成就！"
     elif hours < 1:
@@ -261,7 +236,6 @@ def get_achievement_badge(hours):
         return "👑 机械劳动终结者", "无敌！机器一响黄金万两，您已彻底解放团队双手！"
 
 def render_bottom_panel():
-    """在 GUI 底部渲染数据统计面板"""
     st.markdown("---")
     
     today_str = get_today_key()
@@ -314,7 +288,6 @@ def render_bottom_panel():
     st.success(f"**{badge}**｜{slogan} （区间内累计为团队免除 **{hours_saved:.1f}** 小时“机械重复劳动”）")
 
 def render_ui():
-    """全屏/独立模块页面渲染（支持按年、月、日精准查询与历史明细表）"""
     st.header("🏆 团队提效仪表盘 (Data Dashboard)")
     st.markdown("记录团队通过中台完成的自动化提效战果，支持按**年、月、日**精准追溯明细与全量统计！")
     
@@ -388,4 +361,6 @@ def render_ui():
     else:
         st.write("暂无对应时间段的提效明细数据。")
         
-    if st.button("🔄 刷新
+    if st.button("🔄 刷新数据"):
+        _load_all_records.clear()
+        st.rerun()
